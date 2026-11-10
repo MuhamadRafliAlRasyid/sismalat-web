@@ -15,18 +15,19 @@ class PengembalianAlat extends Model
 
     protected $appends = ['hashid'];
 
-    // ✨ PASTIKAN SEMUA FIELD INI ADA DI $fillable
     protected $fillable = [
-        'pengambilan_alat_id',  // ← WAJIB ADA
-        'user_id',              // ← WAJIB ADA
-        'jumlah',               // ← WAJIB ADA
-        'tanggal_pengembalian', // ← WAJIB ADA
-        'keterangan',           // ← WAJIB ADA
-        'foto',                 // ← WAJIB ADA
+        'pengambilan_alat_id',
+        'pengambilan_alat_item_id', // ← TAMBAHKAN INI (Wajib untuk fitur multi-item return)
+        'user_id',
+        'jumlah',
+        'tanggal_pengembalian',
+        'keterangan',
+        'foto',
     ];
 
     protected $casts = [
-        'tanggal_pengembalian' => 'date',
+        // Gunakan 'datetime' agar jam pengembalian tidak hilang (sesuai skema DB)
+        'tanggal_pengembalian' => 'datetime',
     ];
 
     /* ================= RELASI ================= */
@@ -34,6 +35,15 @@ class PengembalianAlat extends Model
     public function pengambilan()
     {
         return $this->belongsTo(PengambilanAlat::class, 'pengambilan_alat_id');
+    }
+
+    /**
+     * Relasi ke item spesifik dari batch peminjaman.
+     * Digunakan untuk mengetahui alat mana yang dikembalikan dari sebuah batch.
+     */
+    public function item()
+    {
+        return $this->belongsTo(PengambilanAlatItem::class, 'pengambilan_alat_item_id');
     }
 
     public function user()

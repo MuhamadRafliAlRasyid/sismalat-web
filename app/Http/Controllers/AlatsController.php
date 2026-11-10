@@ -100,86 +100,244 @@ class AlatsController extends Controller
     /**
      * Tampilkan daftar alat dengan grouping per nama + pagination manual.
      */
-    public function index(Request $request)
-    {
-        // ── Query dasar ──────────────────────────────────────────────
-        $query = Alat::with(['kategori', 'ruangan']);
+        /**
+     * Tampilkan daftar alat dengan grouping per nama + pagination manual.
+     */
 
-        if (Schema::hasColumn('alats', 'deleted_at')) {
-            $query->whereNull('deleted_at');
-        }
+public function index(Request $request)
+{
+    /*
+    |--------------------------------------------------------------------------
+    | 1. Query Dasar
+    |--------------------------------------------------------------------------
+    */
 
-        // ── Filter pencarian & dropdown ──────────────────────────────
-        if ($request->filled('search')) {
-            $query->search($request->search);
-        }
+    $query = Alat::with(['kategori', 'ruangan']);
 
-        if ($request->filled('kategori_id')) {
-            $query->where('kategori_id', $request->kategori_id);
-        }
+    // Model Alat sudah menggunakan SoftDeletes.
+    // Global scope SoftDeletes otomatis mengabaikan data yang dihapus.
 
-        if ($request->filled('ruangan_id')) {
-            $query->where('ruangan_id', $request->ruangan_id);
-        }
+    /*
+    |--------------------------------------------------------------------------
+    | 2. Filter Pencarian Multi-Kata / Multi-Kolom
+    |--------------------------------------------------------------------------
+    */
 
-        if ($request->filled('status_kalibrasi') && Schema::hasColumn('alats', 'status')) {
-            $query->where('status', $request->status_kalibrasi);
-        }
+    $search = trim((string) $request->query('search', ''));
 
-        // ── Grouping & pagination manual ─────────────────────────────
-        $allAlats = $query->orderBy('nama_alat')->get();
-
-        $groupedAlats = $allAlats->groupBy(function ($alat) {
-            return $this->normalizeNamaAlat($alat->nama_alat);
-        });
-
-        $perPage      = 12;
-        $currentPage  = Paginator::resolveCurrentPage('page');
-        $currentItems = $groupedAlats
-            ->slice(($currentPage - 1) * $perPage, $perPage)
-            ->values();
-
-        $alats = new LengthAwarePaginator(
-            $currentItems,
-            $groupedAlats->count(),
-            $perPage,
-            $currentPage,
-            [
-                'path'  => Paginator::resolveCurrentPath(),
-                'query' => $request->query(),
-            ]
-        );
-
-        // ── Mapping nama pertama per halaman (navigasi cepat) ────────
-        $pageNames = [];
-        $allNames  = $groupedAlats->keys()->values();
-
-        for ($i = 0; $i < $allNames->count(); $i += $perPage) {
-            $pageNum = ($i / $perPage) + 1;
-            $pageNames[$pageNum] = $allNames[$i];
-        }
-
-        $alats->pageNames = $pageNames;
-
-        // ── Data pendukung ───────────────────────────────────────────
-        $kategoris = \App\Models\Kategori::orderBy('nama')->get();
-        $ruangans  = Ruangan::orderBy('kode_ruangan')->get();
-
-        $stats = [
-            'total_hasil' => $allAlats->count(),
-            'total_group' => $groupedAlats->count(),
-            'search'      => $request->search,
-            'filtered'    => $request->filled('search')
-                            || $request->filled('kategori_id')
-                            || $request->filled('ruangan_id')
-                            || $request->filled('status_kalibrasi'),
-        ];
-
-        // ── Periodic check ───────────────────────────────────────────
-        $this->checkExpired();
-
-        return view('alats.index', compact('alats', 'kategoris', 'ruangans', 'stats'));
+    if ($search !== '') {
+        $query->search($search);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 3. Filter Kategori
+    |--------------------------------------------------------------------------
+    */
+
+    $kategoriId = $request->query('kategori_id');
+
+    if ($kategoriId !== null && $kategoriId !== '') {
+        $query->where('kategori_id', $kategoriId);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 4. Filter Ruangan
+    |--------------------------------------------------------------------------
+    */
+
+    $ruanganId = $request->query('ruangan_id');
+
+    if ($ruanganId !== null && $ruanganId !== '') {
+        $query->where('ruangan_id', $ruanganId);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 5. Filter Status Kalibrasi
+    |--------------------------------------------------------------------------
+    |
+    | Active  : Masa berlaku lebih dari 30 hari.
+    | Warning : Masa berlaku 0 sampai 30 hari.
+    | Expired : Masa berlaku sudah lewat.
+    | Unknown : Masa berlaku belum diisi.
+    |
+    */
+
+    $statusFilter = strtolower(
+        trim((string) $request->query('status_kalibrasi', ''))
+    );
+
+    $allowedStatuses = [
+        'expired',
+        'warning',
+        'active',
+        'unknown',
+    ];
+
+    $inStatusFilter = in_array(
+        $statusFilter,
+        $allowedStatuses,
+        true
+    );
+
+    if ($inStatusFilter) {
+
+        $today = Carbon::today()->toDateString();
+
+        $warningEnd = Carbon::today()
+            ->addDays(30)
+            ->toDateString();
+
+        switch ($statusFilter) {
+
+            case 'expired':
+
+                $query->whereNotNull('masa_berlaku')
+                    ->whereDate('masa_berlaku', '<', $today);
+
+                break;
+
+            case 'warning':
+
+                $query->whereNotNull('masa_berlaku')
+                    ->whereDate('masa_berlaku', '>=', $today)
+                    ->whereDate('masa_berlaku', '<=', $warningEnd);
+
+                break;
+
+            case 'active':
+
+                $query->whereNotNull('masa_berlaku')
+                    ->whereDate('masa_berlaku', '>', $warningEnd);
+
+                break;
+
+            case 'unknown':
+
+                $query->whereNull('masa_berlaku');
+
+                break;
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 6. Ambil Data Hasil Filter
+    |--------------------------------------------------------------------------
+    */
+
+    $allAlats = $query
+        ->orderBy('nama_alat')
+        ->orderBy('id')
+        ->get();
+
+    /*
+    |--------------------------------------------------------------------------
+    | 7. Grouping Berdasarkan Nama Alat
+    |--------------------------------------------------------------------------
+    */
+
+    $groupedAlats = $allAlats->groupBy(function ($alat) {
+        return $this->normalizeNamaAlat($alat->nama_alat);
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | 8. Pagination Manual Berdasarkan Group
+    |--------------------------------------------------------------------------
+    */
+
+    $perPage = 12;
+
+    $currentPage = max(
+        1,
+        Paginator::resolveCurrentPage('page')
+    );
+
+    $currentItems = $groupedAlats
+        ->slice(($currentPage - 1) * $perPage, $perPage)
+        ->values();
+
+    $alats = new LengthAwarePaginator(
+        $currentItems,
+        $groupedAlats->count(),
+        $perPage,
+        $currentPage,
+        [
+            'path' => Paginator::resolveCurrentPath(),
+            'query' => $request->query(),
+        ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | 9. Nama Group Untuk Navigasi Halaman
+    |--------------------------------------------------------------------------
+    */
+
+    $pageNames = [];
+
+    $allNames = $groupedAlats->keys()->values();
+
+    foreach ($allNames->chunk($perPage) as $index => $names) {
+        $pageNames[$index + 1] = $names->first();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 10. Data Pendukung Dropdown
+    |--------------------------------------------------------------------------
+    */
+
+    $kategoris = \App\Models\Kategori::orderBy('nama')->get();
+
+    $ruangans = Ruangan::orderBy('kode_ruangan')->get();
+
+    /*
+    |--------------------------------------------------------------------------
+    | 11. Statistik Hasil Pencarian
+    |--------------------------------------------------------------------------
+    */
+
+    $stats = [
+        'total_hasil' => $allAlats->count(),
+
+        'total_group' => $groupedAlats->count(),
+
+        'search' => $search,
+
+        'filtered' =>
+            $search !== ''
+            || ($kategoriId !== null && $kategoriId !== '')
+            || ($ruanganId !== null && $ruanganId !== '')
+            || $inStatusFilter,
+    ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | 12. Notifikasi Masa Berlaku
+    |--------------------------------------------------------------------------
+    */
+
+    $this->checkExpired();
+
+    /*
+    |--------------------------------------------------------------------------
+    | 13. Return View
+    |--------------------------------------------------------------------------
+    */
+
+    return view('alats.index', compact(
+        'alats',
+        'kategoris',
+        'ruangans',
+        'stats',
+        'pageNames'
+    ));
+}
+
 
     /**
      * Tampilkan daftar alat yang punya riwayat (pinjam / kembali / kalibrasi).
@@ -748,74 +906,128 @@ public function riwayat($hashid)
     /**
      * Export daftar alat ke file Excel dengan filter.
      */
-    public function exportExcel(Request $request)
-    {
-        $filters = $request->only(['ruangan_id', 'kategori_id', 'kondisi']);
 
-        return Excel::download(
-            new AlatExport($filters),
-            'Laporan_Alat_Sismalat.xlsx'
-        );
-    }
+/**
+ * Export daftar alat ke file Excel dengan filter.
+ */
+public function exportExcel(Request $request)
+{
+    $filters = $request->validate([
+        'search' => 'nullable|string',
+        'kategori_id' => 'nullable|integer',
+        'ruangan_id' => 'nullable|integer',
+        'status_kalibrasi' => 'nullable|in:expired,warning,active,unknown',
+    ]);
+
+    return Excel::download(
+        new AlatExport($filters),
+        'Laporan_Alat_Sismalat_' . now()->format('Ymd_His') . '.xlsx'
+    );
+}
+
 
     /**
      * Export daftar alat ke file PDF dengan filter.
      */
-    public function exportPdf(Request $request)
-    {
-        $filters = $request->only(['ruangan_id', 'kategori_id', 'kondisi']);
+    /**
+ * Export daftar alat ke file PDF dengan filter.
+ */
+public function exportPdf(Request $request)
+{
+    $filters = $request->validate([
+        'search' => 'nullable|string',
+        'kategori_id' => 'nullable|integer',
+        'ruangan_id' => 'nullable|integer',
+        'status_kalibrasi' => 'nullable|in:expired,warning,active,unknown',
+    ]);
 
-        $query = Alat::with(['kategori', 'ruangan']);
+    $query = Alat::with(['kategori', 'ruangan']);
 
-        if (!empty($filters['ruangan_id'])) {
-            $query->where('ruangan_id', $filters['ruangan_id']);
-        }
-
-        if (!empty($filters['kategori_id'])) {
-            $query->where('kategori_id', $filters['kategori_id']);
-        }
-
-        if (!empty($filters['kondisi'])) {
-            switch ($filters['kondisi']) {
-                case 'baik':
-                    $query->where('jumlah_baik', '>', 0);
-                    break;
-                case 'kurang_baik':
-                    $query->where('jumlah_kurang_baik', '>', 0);
-                    break;
-                case 'rusak_berat':
-                    $query->where('jumlah_rusak_berat', '>', 0);
-                    break;
-            }
-        }
-
-        $alats = $query->orderBy('ruangan_id')->orderBy('kategori_id')->get();
-
-        // ── Info filter untuk header PDF ─────────────────────────────
-        $filterInfo = [];
-
-        if (!empty($filters['ruangan_id'])) {
-            $ruangan = Ruangan::find($filters['ruangan_id']);
-            $filterInfo[] = 'Ruangan: ' . ($ruangan
-                ? $ruangan->kode_ruangan . ' - ' . $ruangan->nama_ruangan
-                : 'Semua');
-        }
-
-        if (!empty($filters['kategori_id'])) {
-            $kategori = \App\Models\Kategori::find($filters['kategori_id']);
-            $filterInfo[] = 'Kategori: ' . ($kategori ? $kategori->nama : 'Semua');
-        }
-
-        $pdf = Pdf::loadView('alats.export-pdf', [
-            'alats'      => $alats,
-            'filterInfo' => $filterInfo,
-            'date'       => now()->format('d F Y, H:i:s'),
-        ]);
-
-        $pdf->setPaper('A4', 'landscape');
-
-        return $pdf->download('Laporan_Alat_Sismalat.pdf');
+    if (Schema::hasColumn('alats', 'deleted_at')) {
+        $query->whereNull('deleted_at');
     }
+
+    // Pencarian
+    if (!empty($filters['search'])) {
+        $query->search($filters['search']);
+    }
+
+    if (!empty($filters['ruangan_id'])) {
+        $query->where('ruangan_id', $filters['ruangan_id']);
+    }
+
+    if (!empty($filters['kategori_id'])) {
+        $query->where('kategori_id', $filters['kategori_id']);
+    }
+
+    // Status kalibrasi
+    $status = $filters['status_kalibrasi'] ?? null;
+
+    if (in_array($status, ['expired', 'warning', 'active', 'unknown'], true)) {
+        $today = now()->startOfDay();
+        $warningEnd = $today->copy()->addDays(30);
+
+        switch ($status) {
+            case 'expired':
+                $query->whereNotNull('masa_berlaku')
+                    ->whereDate('masa_berlaku', '<', $today->toDateString());
+                break;
+            case 'warning':
+                $query->whereNotNull('masa_berlaku')
+                    ->whereDate('masa_berlaku', '>=', $today->toDateString())
+                    ->whereDate('masa_berlaku', '<=', $warningEnd->toDateString());
+                break;
+            case 'active':
+                $query->whereNotNull('masa_berlaku')
+                    ->whereDate('masa_berlaku', '>', $warningEnd->toDateString());
+                break;
+            case 'unknown':
+                $query->whereNull('masa_berlaku');
+                break;
+        }
+    }
+
+    $alats = $query->orderBy('ruangan_id')->orderBy('kategori_id')->get();
+
+    // Info filter untuk header PDF
+    $filterInfo = [];
+
+    if (!empty($filters['search'])) {
+        $filterInfo[] = 'Pencarian: ' . $filters['search'];
+    }
+
+    if (!empty($filters['ruangan_id'])) {
+        $ruangan = Ruangan::find($filters['ruangan_id']);
+        $filterInfo[] = 'Ruangan: ' . ($ruangan
+            ? $ruangan->kode_ruangan . ' - ' . $ruangan->nama_ruangan
+            : 'Semua');
+    }
+
+    if (!empty($filters['kategori_id'])) {
+        $kategori = \App\Models\Kategori::find($filters['kategori_id']);
+        $filterInfo[] = 'Kategori: ' . ($kategori ? $kategori->nama : 'Semua');
+    }
+
+    if (!empty($filters['status_kalibrasi'])) {
+        $labelMap = [
+            'active' => 'Aktif (>30 hari)',
+            'warning' => 'Warning (≤30 hari)',
+            'expired' => 'Expired',
+            'unknown' => 'Tanpa jadwal',
+        ];
+        $filterInfo[] = 'Status Kalibrasi: ' . ($labelMap[$filters['status_kalibrasi']] ?? '-');
+    }
+
+    $pdf = Pdf::loadView('alats.export-pdf', [
+        'alats'      => $alats,
+        'filterInfo' => $filterInfo,
+        'date'       => now()->format('d F Y, H:i:s'),
+    ]);
+
+    $pdf->setPaper('A4', 'landscape');
+
+    return $pdf->download('Laporan_Alat_Sismalat_' . now()->format('Ymd_His') . '.pdf');
+}
 
 
     /* ====================================================================

@@ -6,124 +6,374 @@ use App\Models\Alat;
 use App\Models\KalibrasiAlat;
 use App\Services\HashIdService;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class KalibrasiAlatController extends Controller
 {
-    protected function decode($hashid)
+    private const CERTIFICATE_DIRECTORY = 'kalibrasi/sertifikat';
+    private const CERTIFICATE_MAX_KB = 5120;
+
+    /** Decode hashid menjadi primary key. */
+    protected function decode(string $hashid): int
     {
         $id = app(HashIdService::class)->decode($hashid);
-        if (!$id) abort(404);
-        return $id;
+        abort_if(!$id, 404);
+
+        return (int) $id;
+    }
+
+    /**
+     * FIX: Hanya Admin dan Super Admin yang dapat mengelola kalibrasi.
+     * Menggunakan pola konsisten dengan controller lain (in_array role).
+     */
+    protected function ensureAdminOrSuper(): void
+    {
+        abort_unless(
+            Auth::check() && in_array(Auth::user()->role ?? '', ['admin', 'super'], true),
+            403,
+            'Anda tidak memiliki izin untuk mengelola data kalibrasi.'
+        );
+    }
+
+    /** Query riwayat kalibrasi terbaru untuk satu alat. */
+    protected function latestCalibrationQuery(int $alatId): Builder
+    {
+        return KalibrasiAlat::query()
+            ->where('alat_id', $alatId)
+            ->orderByDesc('tanggal_kalibrasi')
+            ->orderByDesc('id');
+    }
+
+    /** Validasi bersama untuk data kalibrasi dan lampiran sertifikat. */
+    protected function validateCalibration(Request $request, bool $isUpdate = false): array
+    {
+        $rules = [
+            'tanggal_kalibrasi' => ['required', 'date', 'before_or_equal:today'],
+            'masa_berlaku_baru' => ['required', 'date', 'after:tanggal_kalibrasi'],
+            'no_sertifikat' => ['nullable', 'string', 'max:255'],
+            'keterangan' => ['nullable', 'string', 'max:5000'],
+            'bukti_sertifikat' => [
+                $isUpdate ? 'nullable' : 'required',
+                'file',
+                'mimes:jpg,jpeg,png,webp,pdf',
+                'max:' . self::CERTIFICATE_MAX_KB,
+            ],
+        ];
+
+        return $request->validate($rules, [
+            'tanggal_kalibrasi.required' => 'Tanggal kalibrasi wajib diisi.',
+            'tanggal_kalibrasi.date' => 'Tanggal kalibrasi tidak valid.',
+            'tanggal_kalibrasi.before_or_equal' => 'Tanggal kalibrasi tidak boleh melewati hari ini.',
+            'masa_berlaku_baru.required' => 'Tanggal masa berlaku wajib diisi.',
+            'masa_berlaku_baru.after' => 'Masa berlaku harus setelah tanggal kalibrasi.',
+            'no_sertifikat.max' => 'Nomor sertifikat maksimal 255 karakter.',
+            'keterangan.max' => 'Keterangan maksimal 5.000 karakter.',
+            'bukti_sertifikat.required' => 'Bukti sertifikat kalibrasi wajib diunggah.',
+            'bukti_sertifikat.file' => 'Bukti sertifikat harus berupa file yang valid.',
+            'bukti_sertifikat.mimes' => 'Bukti sertifikat harus berupa JPG, JPEG, PNG, WEBP, atau PDF.',
+            'bukti_sertifikat.max' => 'Ukuran bukti sertifikat maksimal 5 MB.',
+        ]);
+    }
+
+    /** Simpan bukti sertifikat pada disk local (private). */
+    protected function storeCertificate(Request $request): ?string
+    {
+        if (!$request->hasFile('bukti_sertifikat')) {
+            return null;
+        }
+
+        return $request->file('bukti_sertifikat')
+            ->store(self::CERTIFICATE_DIRECTORY, 'local');
+    }
+
+    /** Hapus file sertifikat dari disk local. */
+    protected function deleteCertificate(?string $path): void
+    {
+        if ($path && str_starts_with($path, self::CERTIFICATE_DIRECTORY . '/')) {
+            Storage::disk('local')->delete($path);
+        }
+    }
+
+    /** Sinkronkan masa berlaku alat berdasarkan catatan kalibrasi terbaru. */
+    protected function syncMasaBerlaku(Alat $alat): bool
+    {
+        $latest = $this->latestCalibrationQuery($alat->id)->first();
+        $newExpiry = $latest?->masa_berlaku_baru?->toDateString();
+        $currentExpiry = $alat->masa_berlaku
+            ? Carbon::parse($alat->masa_berlaku)->toDateString()
+            : null;
+
+        if ($currentExpiry === $newExpiry) {
+            return false;
+        }
+
+        $alat->update([
+            'masa_berlaku' => $newExpiry,
+            'last_notified_at' => null,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * FIX: Tandai notifikasi kalibrasi lama sebagai sudah dibaca.
+     * Menggunakan JSON operator `->` untuk kompatibilitas lintas DB driver.
+     */
+    protected function markCalibrationNotificationsAsRead(int $alatId): void
+    {
+        DB::table('notifications')
+            ->where('type', 'App\\Notifications\\AlatExpiredNotification')
+            ->whereNull('read_at')
+            ->where(function ($q) use ($alatId) {
+                // Coba 2 pola: data->alat_id dan data->alat_hashid
+                $q->where(DB::raw("JSON_EXTRACT(data, '$.alat_id')"), $alatId)
+                  ->orWhere(DB::raw("JSON_EXTRACT(data, '$.alat_id')"), (string) $alatId);
+            })
+            ->update(['read_at' => now()]);
+    }
+
+    /** Pastikan tidak ada dua catatan pada tanggal kalibrasi yang sama untuk satu alat. */
+    protected function ensureUniqueCalibrationDate(
+        int $alatId,
+        string $tanggalKalibrasi,
+        ?int $exceptId = null
+    ): void {
+        $query = KalibrasiAlat::query()
+            ->where('alat_id', $alatId)
+            ->whereDate('tanggal_kalibrasi', $tanggalKalibrasi);
+
+        if ($exceptId !== null) {
+            $query->where('id', '!=', $exceptId);
+        }
+
+        if ($query->exists()) {
+            throw ValidationException::withMessages([
+                'tanggal_kalibrasi' => 'Sudah ada catatan kalibrasi untuk alat ini pada tanggal tersebut.',
+            ]);
+        }
+    }
+
+    /** Masa berlaku harus lebih akhir daripada catatan kalibrasi sebelumnya. */
+    protected function ensureExpiryAfterPreviousCalibration(
+        int $alatId,
+        string $tanggalKalibrasi,
+        string $masaBerlakuBaru,
+        ?int $exceptId = null
+    ): void {
+        $query = KalibrasiAlat::query()
+            ->where('alat_id', $alatId)
+            ->whereDate('tanggal_kalibrasi', '<', $tanggalKalibrasi)
+            ->orderByDesc('tanggal_kalibrasi')
+            ->orderByDesc('id');
+
+        if ($exceptId !== null) {
+            $query->where('id', '!=', $exceptId);
+        }
+
+        $previous = $query->first();
+
+        if (
+            $previous
+            && $previous->masa_berlaku_baru
+            && Carbon::parse($masaBerlakuBaru)->lessThanOrEqualTo(
+                Carbon::parse($previous->masa_berlaku_baru)
+            )
+        ) {
+            throw ValidationException::withMessages([
+                'masa_berlaku_baru' => 'Masa berlaku harus lebih akhir daripada masa berlaku kalibrasi sebelumnya.',
+            ]);
+        }
     }
 
     /* ================= INDEX ================= */
 
     public function index(Request $request)
     {
-        $query = KalibrasiAlat::with('alat');
+        // FIX: Tambahkan eager load ruangan agar kolom ruangan di view terisi
+        $query = KalibrasiAlat::query()->with(['alat.ruangan', 'alat.kategori']);
 
-        // 🔍 search
-        if ($request->search) {
-            $query->whereHas('alat', function ($q) use ($request) {
-                $q->where('nama_alat', 'like', '%' . $request->search . '%');
+        if ($request->filled('search')) {
+            $search = trim((string) $request->input('search'));
+
+            $query->where(function (Builder $builder) use ($search) {
+                $builder
+                    ->whereHas('alat', function (Builder $alatQuery) use ($search) {
+                        $alatQuery
+                            ->where('nama_alat', 'like', "%{$search}%")
+                            ->orWhere('merk', 'like', "%{$search}%")
+                            ->orWhere('tipe', 'like', "%{$search}%")
+                            ->orWhere('no_seri', 'like', "%{$search}%")
+                            ->orWhere('no_identitas', 'like', "%{$search}%");
+                    })
+                    ->orWhere('no_sertifikat', 'like', "%{$search}%")
+                    ->orWhere('keterangan', 'like', "%{$search}%");
             });
         }
 
-        $data = $query->latest()->paginate(10)->withQueryString();
+        if ($request->filled('date_from')) {
+            $query->whereDate('tanggal_kalibrasi', '>=', $request->date_from);
+        }
 
-        return view('kalibrasis.index', compact('data'));
+        if ($request->filled('date_to')) {
+            $query->whereDate('tanggal_kalibrasi', '<=', $request->date_to);
+        }
+
+        $data = $query
+            ->orderByDesc('tanggal_kalibrasi')
+            ->orderByDesc('id')
+            ->paginate(12)
+            ->withQueryString();
+
+        $filters = $request->only(['search', 'date_from', 'date_to']);
+
+        return view('kalibrasis.index', compact('data', 'filters'));
     }
 
     /* ================= CREATE ================= */
 
-    public function create($hashid)
+    public function create(string $hashid)
     {
-        $alat = Alat::findOrFail($this->decode($hashid));
+        $this->ensureAdminOrSuper();
 
-        return view('kalibrasis.create', compact('alat'));
+        // FIX: Eager load relasi yang diperlukan di form
+        $alat = Alat::with(['kategori', 'ruangan'])->findOrFail($this->decode($hashid));
+        $lastKalibrasi = $this->latestCalibrationQuery($alat->id)->first();
+
+        return view('kalibrasis.create', compact('alat', 'lastKalibrasi'));
     }
 
     /* ================= STORE ================= */
 
-
-
-public function store(Request $request, $hashid)
+    public function store(Request $request, string $hashid)
     {
-        $alat = Alat::findOrFail($this->decode($hashid));
+        $this->ensureAdminOrSuper();
 
-        $validated = $request->validate([
-            'tanggal_kalibrasi' => 'required|date|before_or_equal:today',
-            'masa_berlaku_baru' => 'required|date',
-            'no_sertifikat' => 'nullable|string|max:255',
-            'keterangan' => 'nullable|string',
-        ]);
+        $validated = $this->validateCalibration($request);
+        $alatId = $this->decode($hashid);
+        $certificatePath = $this->storeCertificate($request);
 
-        $tanggalKalibrasi = Carbon::parse($validated['tanggal_kalibrasi']);
-        $masaBerlakuBaru = Carbon::parse($validated['masa_berlaku_baru']);
+        try {
+            $kalibrasi = DB::transaction(function () use ($alatId, $validated, $certificatePath) {
+                $alat = Alat::query()->lockForUpdate()->findOrFail($alatId);
 
-        $lastKalibrasi = KalibrasiAlat::where('alat_id', $alat->id)
-            ->latest('tanggal_kalibrasi')
-            ->first();
+                $tanggal = Carbon::parse($validated['tanggal_kalibrasi'])->toDateString();
+                $masaBerlaku = Carbon::parse($validated['masa_berlaku_baru'])->toDateString();
 
-        if ($lastKalibrasi && $tanggalKalibrasi->lt($lastKalibrasi->tanggal_kalibrasi)) {
-            return back()->withErrors([
-                'tanggal_kalibrasi' => 'Tanggal tidak boleh lebih lama dari sebelumnya'
-            ])->withInput();
+                $latest = $this->latestCalibrationQuery($alat->id)->lockForUpdate()->first();
+
+                if (
+                    $latest
+                    && Carbon::parse($tanggal)->lessThan(
+                        Carbon::parse($latest->tanggal_kalibrasi)->toDateString()
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'tanggal_kalibrasi' => 'Tanggal kalibrasi baru tidak boleh lebih lama daripada catatan kalibrasi terakhir.',
+                    ]);
+                }
+
+                $this->ensureUniqueCalibrationDate($alat->id, $tanggal);
+                $this->ensureExpiryAfterPreviousCalibration($alat->id, $tanggal, $masaBerlaku);
+
+                $record = KalibrasiAlat::create([
+                    'alat_id' => $alat->id,
+                    'tanggal_kalibrasi' => $tanggal,
+                    'masa_berlaku_baru' => $masaBerlaku,
+                    'no_sertifikat' => $validated['no_sertifikat'] ?? null,
+                    'keterangan' => $validated['keterangan'] ?? null,
+                    'bukti_sertifikat' => $certificatePath,
+                ]);
+
+                if ($this->syncMasaBerlaku($alat)) {
+                    $this->markCalibrationNotificationsAsRead($alat->id);
+                }
+
+                return $record;
+            });
+
+            return redirect()
+                ->route('kalibrasis.show', $kalibrasi->hashid)
+                ->with('success', 'Data kalibrasi dan bukti sertifikat berhasil disimpan. Masa berlaku alat telah diperbarui.');
+        } catch (ValidationException $exception) {
+            $this->deleteCertificate($certificatePath);
+            throw $exception;
+        } catch (Throwable $exception) {
+            $this->deleteCertificate($certificatePath);
+
+            Log::error('Gagal menyimpan kalibrasi alat.', [
+                'alat_id' => $alatId,
+                'user_id' => Auth::id(),
+                'message' => $exception->getMessage(),
+            ]);
+
+            return back()
+                ->withInput()
+                ->with('error', 'Kalibrasi belum dapat disimpan. Silakan periksa kembali data atau hubungi administrator.');
         }
-
-        if ($masaBerlakuBaru->lte($tanggalKalibrasi)) {
-            return back()->withErrors([
-                'masa_berlaku_baru' => 'Masa berlaku harus setelah tanggal kalibrasi'
-            ])->withInput();
-        }
-
-        if ($lastKalibrasi && $masaBerlakuBaru->lte($lastKalibrasi->masa_berlaku_baru)) {
-            return back()->withErrors([
-                'masa_berlaku_baru' => 'Harus lebih besar dari masa berlaku sebelumnya'
-            ])->withInput();
-        }
-
-        $kalibrasi = KalibrasiAlat::create([
-            'alat_id' => $alat->id,
-            ...$validated
-        ]);
-
-        $alat->update([
-            'masa_berlaku' => $validated['masa_berlaku_baru'],
-            'last_notified_at' => null
-        ]);
-
-        // ✅ Tandai notifikasi lama sebagai sudah dibaca
-        DB::table('notifications')
-            ->where('data->alat_id', $alat->id)
-            ->whereNull('read_at')
-            ->update(['read_at' => now()]);
-
-        return redirect()->route('kalibrasis.show', $kalibrasi->hashid)
-            ->with('success', 'Kalibrasi berhasil disimpan');
     }
-
 
     /* ================= SHOW ================= */
 
-    public function show($hashid)
+    public function show(string $hashid)
     {
-        $id = app(HashIdService::class)->decode($hashid);
-        abort_if(!$id, 404);
+        // FIX: Eager load semua relasi yang dibutuhkan view detail
+        $data = KalibrasiAlat::with(['alat.kategori', 'alat.ruangan'])
+            ->findOrFail($this->decode($hashid));
 
-        $data = KalibrasiAlat::with('alat')->findOrFail($id);
-        // $data sekarang berisi satu record kalibrasi beserta relasi alatnya
+        // Attach helper accessor untuk view (bukti_sertifikat_is_pdf & bukti_sertifikat_name)
+        if ($data->bukti_sertifikat) {
+            $ext = strtolower(pathinfo($data->bukti_sertifikat, PATHINFO_EXTENSION));
+            $data->setAttribute('bukti_sertifikat_is_pdf', $ext === 'pdf');
+            $data->setAttribute('bukti_sertifikat_name', basename($data->bukti_sertifikat));
+        }
 
         return view('kalibrasis.show', compact('data'));
     }
 
+    /**
+     * Tampilkan/unduh bukti sertifikat melalui route terproteksi.
+     * File tidak diletakkan pada direktori publik.
+     */
+    public function sertifikat(string $hashid)
+    {
+        $this->ensureAdminOrSuper();
+
+        $data = KalibrasiAlat::query()->findOrFail($this->decode($hashid));
+        abort_unless($data->bukti_sertifikat, 404);
+
+        $disk = Storage::disk('local');
+        abort_unless($disk->exists($data->bukti_sertifikat), 404);
+
+        $path = $disk->path($data->bukti_sertifikat);
+        $mimeType = $disk->mimeType($data->bukti_sertifikat) ?: 'application/octet-stream';
+        $filename = basename($data->bukti_sertifikat);
+        $fileSize = $disk->size($data->bukti_sertifikat);
+
+        // FIX: Tambahkan Content-Length agar download tidak corrupt
+        return response()->file($path, [
+            'Content-Type' => $mimeType,
+            'Content-Length' => $fileSize,
+            'Content-Disposition' => 'inline; filename="' . addslashes($filename) . '"',
+            'X-Content-Type-Options' => 'nosniff',
+            'Cache-Control' => 'private, no-store, max-age=0',
+        ]);
+    }
+
     /* ================= EDIT ================= */
 
-    public function edit($hashid)
+    public function edit(string $hashid)
     {
-        $data = KalibrasiAlat::with('alat')
+        $this->ensureAdminOrSuper();
+
+        // FIX: Eager load relasi yang diperlukan di form edit
+        $data = KalibrasiAlat::with(['alat.kategori', 'alat.ruangan'])
             ->findOrFail($this->decode($hashid));
 
         return view('kalibrasis.edit', compact('data'));
@@ -131,91 +381,112 @@ public function store(Request $request, $hashid)
 
     /* ================= UPDATE ================= */
 
-    public function update(Request $request, $hashid)
+    public function update(Request $request, string $hashid)
     {
-        $data = KalibrasiAlat::with('alat')->findOrFail($this->decode($hashid));
-        $alat = $data->alat;
+        $this->ensureAdminOrSuper();
 
-        $validated = $request->validate([
-            'tanggal_kalibrasi' => 'required|date|before_or_equal:today',
-            'masa_berlaku_baru' => 'required|date',
-            'no_sertifikat' => 'nullable|string|max:255',
-            'keterangan' => 'nullable|string',
-        ]);
+        $validated = $this->validateCalibration($request, true);
+        $id = $this->decode($hashid);
+        $newCertificatePath = $this->storeCertificate($request);
 
-        $tanggalKalibrasi = Carbon::parse($validated['tanggal_kalibrasi']);
-        $masaBerlakuBaru = Carbon::parse($validated['masa_berlaku_baru']);
+        try {
+            $oldCertificatePath = null;
 
-        $lastKalibrasi = KalibrasiAlat::where('alat_id', $alat->id)
-            ->where('id', '!=', $data->id)
-            ->latest('tanggal_kalibrasi')
-            ->first();
+            DB::transaction(function () use ($id, $validated, $newCertificatePath, &$oldCertificatePath) {
+                $data = KalibrasiAlat::query()->lockForUpdate()->findOrFail($id);
+                $alat = Alat::query()->lockForUpdate()->findOrFail($data->alat_id);
 
-        if ($lastKalibrasi && $tanggalKalibrasi->lt($lastKalibrasi->tanggal_kalibrasi)) {
-            return back()->withErrors([
-                'tanggal_kalibrasi' => 'Tanggal tidak boleh lebih lama dari data lain'
-            ])->withInput();
-        }
+                $tanggal = Carbon::parse($validated['tanggal_kalibrasi'])->toDateString();
+                $masaBerlaku = Carbon::parse($validated['masa_berlaku_baru'])->toDateString();
 
-        if ($masaBerlakuBaru->lte($tanggalKalibrasi)) {
-            return back()->withErrors([
-                'masa_berlaku_baru' => 'Masa berlaku harus setelah tanggal kalibrasi'
-            ])->withInput();
-        }
+                $this->ensureUniqueCalibrationDate($alat->id, $tanggal, $data->id);
+                $this->ensureExpiryAfterPreviousCalibration($alat->id, $tanggal, $masaBerlaku, $data->id);
 
-        if ($lastKalibrasi && $masaBerlakuBaru->lte($lastKalibrasi->masa_berlaku_baru)) {
-            return back()->withErrors([
-                'masa_berlaku_baru' => 'Harus lebih besar dari data sebelumnya'
-            ])->withInput();
-        }
+                $changes = [
+                    'tanggal_kalibrasi' => $tanggal,
+                    'masa_berlaku_baru' => $masaBerlaku,
+                    'no_sertifikat' => $validated['no_sertifikat'] ?? null,
+                    'keterangan' => $validated['keterangan'] ?? null,
+                ];
 
-        $data->update($validated);
+                if ($newCertificatePath !== null) {
+                    $oldCertificatePath = $data->bukti_sertifikat;
+                    $changes['bukti_sertifikat'] = $newCertificatePath;
+                }
 
-        $latest = KalibrasiAlat::where('alat_id', $alat->id)
-            ->latest('tanggal_kalibrasi')
-            ->first();
+                $data->update($changes);
 
-        if ($latest && $latest->id == $data->id) {
-            $alat->update([
-                'masa_berlaku' => $validated['masa_berlaku_baru']
+                if ($this->syncMasaBerlaku($alat)) {
+                    $this->markCalibrationNotificationsAsRead($alat->id);
+                }
+            });
+
+            if ($newCertificatePath !== null && $oldCertificatePath) {
+                $this->deleteCertificate($oldCertificatePath);
+            }
+
+            $updated = KalibrasiAlat::findOrFail($id);
+
+            return redirect()
+                ->route('kalibrasis.show', $updated->hashid)
+                ->with('success', 'Data kalibrasi berhasil diperbarui.');
+        } catch (ValidationException $exception) {
+            $this->deleteCertificate($newCertificatePath);
+            throw $exception;
+        } catch (Throwable $exception) {
+            $this->deleteCertificate($newCertificatePath);
+
+            Log::error('Gagal memperbarui kalibrasi alat.', [
+                'kalibrasi_id' => $id,
+                'user_id' => Auth::id(),
+                'message' => $exception->getMessage(),
             ]);
 
-            // ✅ Tandai notifikasi lama sebagai sudah dibaca
-            DB::table('notifications')
-                ->where('data->alat_id', $alat->id)
-                ->whereNull('read_at')
-                ->update(['read_at' => now()]);
+            return back()
+                ->withInput()
+                ->with('error', 'Perubahan kalibrasi belum dapat disimpan. File sertifikat sebelumnya tetap dipertahankan.');
         }
-
-        return redirect()->route('kalibrasis.show', $data->hashid)
-            ->with('success', 'Kalibrasi berhasil diupdate');
     }
 
     /* ================= DELETE ================= */
 
-    public function destroy($hashid)
+    public function destroy(string $hashid)
     {
-        $data = KalibrasiAlat::findOrFail($this->decode($hashid));
-        $alat = $data->alat;
+        $this->ensureAdminOrSuper();
 
-        $data->delete();
+        $id = $this->decode($hashid);
 
-        // 🔥 recalc masa berlaku dari data terbaru
-        $latest = KalibrasiAlat::where('alat_id', $alat->id)
-            ->latest('tanggal_kalibrasi')
-            ->first();
+        try {
+            $certificatePath = null;
 
-        if ($latest) {
-            $alat->update([
-                'masa_berlaku' => $latest->masa_berlaku_baru
+            DB::transaction(function () use ($id, &$certificatePath) {
+                $data = KalibrasiAlat::query()->lockForUpdate()->findOrFail($id);
+                $alat = Alat::query()->lockForUpdate()->findOrFail($data->alat_id);
+
+                $certificatePath = $data->bukti_sertifikat;
+                $data->delete();
+
+                if ($this->syncMasaBerlaku($alat)) {
+                    $this->markCalibrationNotificationsAsRead($alat->id);
+                }
+            });
+
+            $this->deleteCertificate($certificatePath);
+
+            return redirect()
+                ->route('kalibrasis.index')
+                ->with('success', 'Catatan kalibrasi dan file bukti sertifikat berhasil dihapus. Masa berlaku alat telah diperbarui.');
+        } catch (Throwable $exception) {
+            Log::error('Gagal menghapus kalibrasi alat.', [
+                'kalibrasi_id' => $id,
+                'user_id' => Auth::id(),
+                'message' => $exception->getMessage(),
             ]);
-        } else {
-            $alat->update([
-                'masa_berlaku' => null
-            ]);
+
+            return back()->with(
+                'error',
+                'Catatan kalibrasi belum dapat dihapus. Silakan coba kembali atau hubungi administrator.'
+            );
         }
-
-        return redirect()->route('kalibrasis.index')
-            ->with('success', 'Data kalibrasi dihapus');
     }
 }

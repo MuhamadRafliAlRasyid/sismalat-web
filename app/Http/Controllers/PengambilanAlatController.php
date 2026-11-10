@@ -23,6 +23,8 @@ use Illuminate\Validation\ValidationException;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
 use Intervention\Image\ImageManager;
 use Carbon\Carbon;
+use App\Exports\LaporanPinjamKembaliExport;
+use Maatwebsite\Excel\Facades\Excel;
 
 class PengambilanAlatController extends Controller
 {
@@ -77,75 +79,183 @@ class PengambilanAlatController extends Controller
 
     /* ================= INDEX ================= */
 
-    public function index(Request $request)
-    {
-        $query = PengambilanAlat::with(['user', 'bagian', 'items.alat'])
-            ->latest('waktu_pengambilan');
 
-        // Non-admin/super hanya melihat batch miliknya sendiri
-        if (Auth::check() && !Auth::user()->hasRole(['admin', 'super'])) {
-            $query->where('user_id', Auth::id());
-        }
+public function index(Request $request)
+{
+    // ==========================================
+    // 1. QUERY UTAMA
+    // ==========================================
+    $query = PengambilanAlat::with([
+        'user',
+        'bagian',
+        'items.alat'
+    ])->latest('waktu_pengambilan');
 
-        // Filter status
-        if ($request->filled('status')) {
-            match ($request->status) {
-                'dipinjam'                => $query->whereIn('status', ['dipinjam', 'sebagian_dikembalikan']),
-                'dikembalikan'            => $query->selesai(),
-                'terlambat'               => $query->terlambat(),
-                'warning'                 => $query->mendekatiJatuhTempo(3),
-                default                   => null,
-            };
-        }
+    // Pembatasan akses pengguna
+    $isAdminOrSuper = Auth::check()
+        && Auth::user()->hasRole(['admin', 'super']);
 
-        if ($request->boolean('critical')) {
-            $query->where('is_critical', true);
-        }
-
-        // Pencarian (termasuk lewat items.alat, karena header tidak lagi punya alat_id)
-        if ($request->filled('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('nama_peminjam', 'like', "%{$search}%")
-                  ->orWhere('keperluan', 'like', "%{$search}%")
-                  ->orWhereHas('user', fn($uq) => $uq->where('name', 'like', "%{$search}%"))
-                  ->orWhereHas('bagian', fn($bq) => $bq->where('nama', 'like', "%{$search}%"))
-                  ->orWhereHas('items.alat', function ($aq) use ($search) {
-                      $aq->where('nama_alat', 'like', "%{$search}%")
-                         ->orWhere('merk', 'like', "%{$search}%")
-                         ->orWhere('no_seri', 'like', "%{$search}%");
-                  });
-            });
-        }
-
-        // Filter rentang tanggal
-        if ($request->filled('date_from') && $request->filled('date_to')) {
-            $query->whereBetween('waktu_pengambilan', [
-                $request->date_from . ' 00:00:00',
-                $request->date_to . ' 23:59:59',
-            ]);
-        }
-
-        // Sorting
-        $sortBy    = $request->input('sort_by', 'waktu_pengambilan');
-        $sortOrder = $request->input('sort_order', 'desc');
-        if (in_array($sortBy, ['waktu_pengambilan', 'nama_peminjam', 'status', 'created_at'], true)) {
-            $query->orderBy($sortBy, $sortOrder);
-        }
-
-        $data = $query->paginate(15)->withQueryString();
-
-        $stats = [
-            'total_aktif'     => PengambilanAlat::aktif()->count(),
-            'total_terlambat' => PengambilanAlat::terlambat()->count(),
-            'total_warning'   => PengambilanAlat::mendekatiJatuhTempo(3)->count(),
-            'total_critical'  => PengambilanAlat::where('is_critical', true)->count(),
-        ];
-
-        $filters = $request->only(['search', 'status', 'critical', 'date_from', 'date_to']);
-
-        return view('pengambilan_alat.index', compact('data', 'stats', 'filters'));
+    if (Auth::check() && !$isAdminOrSuper) {
+        $query->where('user_id', Auth::id());
     }
+
+    // ==========================================
+    // 2. FILTER STATUS
+    // ==========================================
+    if ($request->filled('status')) {
+        match ($request->status) {
+            'dipinjam' => $query->whereIn(
+                'status',
+                ['dipinjam', 'sebagian_dikembalikan']
+            ),
+
+            'dikembalikan' => $query->selesai(),
+
+            'terlambat' => $query->terlambat(),
+
+            'warning' => $query->mendekatiJatuhTempo(3),
+
+            default => null,
+        };
+    }
+
+    // ==========================================
+    // 3. FILTER KRITIS
+    // ==========================================
+    if ($request->boolean('critical')) {
+        $query->where('is_critical', true);
+    }
+
+    // ==========================================
+    // 4. PENCARIAN
+    // ==========================================
+    if ($request->filled('search')) {
+        $search = trim($request->search);
+
+        $query->where(function ($q) use ($search) {
+            $q->where('nama_peminjam', 'like', "%{$search}%")
+                ->orWhere('keperluan', 'like', "%{$search}%")
+
+                ->orWhereHas('user', function ($uq) use ($search) {
+                    $uq->where('name', 'like', "%{$search}%");
+                })
+
+                ->orWhereHas('bagian', function ($bq) use ($search) {
+                    $bq->where('nama', 'like', "%{$search}%");
+                })
+
+                ->orWhereHas('items.alat', function ($aq) use ($search) {
+                    $aq->where('nama_alat', 'like', "%{$search}%")
+                        ->orWhere('merk', 'like', "%{$search}%")
+                        ->orWhere('no_seri', 'like', "%{$search}%");
+                });
+        });
+    }
+
+    // ==========================================
+    // 5. FILTER RENTANG TANGGAL
+    // ==========================================
+    if ($request->filled('date_from')) {
+        $query->whereDate(
+            'waktu_pengambilan',
+            '>=',
+            $request->date_from
+        );
+    }
+
+    if ($request->filled('date_to')) {
+        $query->whereDate(
+            'waktu_pengambilan',
+            '<=',
+            $request->date_to
+        );
+    }
+
+    // ==========================================
+    // 6. SORTING
+    // ==========================================
+    $sortBy = $request->input(
+        'sort_by',
+        'waktu_pengambilan'
+    );
+
+    $sortOrder = strtolower(
+        $request->input('sort_order', 'desc')
+    );
+
+    $allowedSort = [
+        'waktu_pengambilan',
+        'nama_peminjam',
+        'status',
+        'created_at'
+    ];
+
+    if (!in_array($sortBy, $allowedSort, true)) {
+        $sortBy = 'waktu_pengambilan';
+    }
+
+    if (!in_array($sortOrder, ['asc', 'desc'], true)) {
+        $sortOrder = 'desc';
+    }
+
+    $query->orderBy($sortBy, $sortOrder);
+
+    // ==========================================
+    // 7. PAGINATION
+    // ==========================================
+    $data = $query->paginate(15)->withQueryString();
+
+    // ==========================================
+    // 8. STATISTIK
+    // ==========================================
+    // Query statistik menggunakan pembatasan akses
+    // yang sama dengan daftar transaksi.
+
+    $statsQuery = PengambilanAlat::query();
+
+    if (Auth::check() && !$isAdminOrSuper) {
+        $statsQuery->where('user_id', Auth::id());
+    }
+
+    $stats = [
+        // Perhatikan nama key harus sama dengan Blade
+        'aktif' => (clone $statsQuery)
+            ->aktif()
+            ->count(),
+
+        'terlambat' => (clone $statsQuery)
+            ->terlambat()
+            ->count(),
+
+        'warning' => (clone $statsQuery)
+            ->mendekatiJatuhTempo(3)
+            ->count(),
+
+        'critical' => (clone $statsQuery)
+            ->where('is_critical', true)
+            ->count(),
+    ];
+
+    // ==========================================
+    // 9. FILTER YANG AKTIF
+    // ==========================================
+    $filters = $request->only([
+        'search',
+        'status',
+        'critical',
+        'date_from',
+        'date_to'
+    ]);
+
+    // ==========================================
+    // 10. RETURN VIEW
+    // ==========================================
+    return view(
+        'pengambilan_alat.index',
+        compact('data', 'stats', 'filters')
+    );
+}
+
 
     /* ================= CREATE ================= */
 
@@ -272,8 +382,8 @@ class PengambilanAlatController extends Controller
 
     public function show($hashid)
     {
-        $data = PengambilanAlat::with(['user', 'bagian', 'items.alat', 'items'])
-            ->findOrFail($this->resolveHashid($hashid));
+        $data = PengambilanAlat::with(['user', 'bagian', 'items.alat', 'items', 'approver'])
+        ->findOrFail($this->resolveHashid($hashid));
 
         if (!Auth::user()->hasRole(['admin', 'super']) && Auth::id() !== $data->user_id) {
             abort(403);
@@ -307,7 +417,97 @@ class PengambilanAlatController extends Controller
 
         return view('pengambilan_alat.edit', compact('data', 'alats', 'users', 'bagians'));
     }
+    /* ================= EXPORT EXCEL (PINJAM + KEMBALI) ================= */
 
+/**
+ * Export laporan gabungan peminjaman & pengembalian dalam satu file Excel
+ * dengan 3 sheet: Ringkasan, Peminjaman, Pengembalian.
+ * Mengikuti filter yang aktif di halaman index (search, status, tanggal).
+ */
+public function exportExcel(Request $request)
+{
+    // ✅ Pengecekan role di controller (bukan di middleware route)
+    abort_unless(
+        Auth::check() && Auth::user()->hasRole(['admin', 'super']),
+        403,
+        'Hanya admin/super yang dapat melakukan export Excel.'
+    );
+
+    $filters = $request->validate([
+        'search'    => 'nullable|string|max:255',
+        'status'    => 'nullable|in:dipinjam,dikembalikan,terlambat,warning',
+        'critical'  => 'nullable|boolean',
+        'date_from' => 'nullable|date',
+        'date_to'   => 'nullable|date',
+    ]);
+
+    $filename = 'Laporan_Peminjaman_Pengembalian_' . now()->format('Ymd_His') . '.xlsx';
+
+    return Excel::download(new LaporanPinjamKembaliExport($filters), $filename);
+}
+
+    /* ================= APPROVAL ================= */
+
+/**
+ * Simpan persetujuan pengambilan alat oleh admin/super.
+ * Baris dikunci agar dua admin tidak dapat menyetujui transaksi yang sama bersamaan.
+ */
+public function approve($hashid)
+{
+    abort_unless(Auth::user()->hasRole(['admin', 'super']), 403);
+
+    $batchId = $this->resolveHashid($hashid);
+    $admin = Auth::user();
+
+    try {
+        $approved = DB::transaction(function () use ($batchId, $admin) {
+            $data = PengambilanAlat::whereKey($batchId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($data->approved_at) {
+                return false;
+            }
+
+            if (!in_array($data->status, ['dipinjam', 'sebagian_dikembalikan'], true)) {
+                throw new \DomainException('Transaksi yang sudah selesai tidak dapat disetujui.');
+            }
+
+            $adminName = trim((string) $admin->name);
+            if ($adminName === '') {
+                throw new \DomainException('Nama admin tidak tersedia pada akun yang sedang digunakan.');
+            }
+
+           $data->forceFill([
+    'approved_by'        => $admin->id,
+    'approved_by_name'   => $adminName,
+    'approved_at'        => now(),
+    'approved_by_role'   => $admin->hasRole('super') ? 'Super Admin' : 'Admin',
+    'verification_token' => \Illuminate\Support\Str::random(64),
+])->save();
+
+            return true;
+        });
+    } catch (\DomainException $e) {
+        return back()->with('error', $e->getMessage());
+    } catch (\Throwable $e) {
+        Log::error('[PengambilanAlatApproval] Gagal menyimpan persetujuan.', [
+            'batch_id' => $batchId,
+            'admin_id' => $admin->id,
+            'error'    => $e->getMessage(),
+        ]);
+
+        return back()->with('error', 'Persetujuan gagal disimpan. Silakan coba kembali.');
+    }
+
+    if (!$approved) {
+        return back()->with('error', 'Transaksi ini sudah disetujui sebelumnya.');
+    }
+
+    return redirect()
+        ->route('pengambilan_alat.show', $hashid)
+        ->with('success', 'Pengambilan alat berhasil disetujui.');
+}
     /* ================= UPDATE ================= */
 
     public function update(Request $request, $hashid)
@@ -376,27 +576,36 @@ class PengambilanAlatController extends Controller
                 $updateData['tanggal_jatuh_tempo'] = $newDueDate;
 
                 // Jika tanggal jatuh tempo berubah, peringatan lama tidak lagi relevan.
-                if ($dueDateChanged) {
-                    $resetWarningData = [
-                        'notified_15_percent' => false,
-                        'notified_1_day' => false,
-                        'notified_overdue' => false,
-                        'warning_15_sent_at' => null,
-                        'warning_1day_sent_at' => null,
-                        'last_warned_at' => null,
-                        'is_critical' => false,
-                    ];
+               if ($dueDateChanged) {
+    $resetWarningData = [
+        'notified_15_percent' => false,
+        'notified_1_day' => false,
+        'notified_overdue' => false,
+        'warning_15_sent_at' => null,
+        'warning_1day_sent_at' => null,
+        'last_warned_at' => null,
+        'is_critical' => false,
+    ];
 
-                    // Kolom overdue merupakan tambahan migration; cek agar update
-                    // transaksi lama tetap aman sebelum migration dijalankan.
-                    if (Schema::hasColumn('pengambilan_alats', 'warning_overdue_sent_at')) {
-                        $resetWarningData['warning_overdue_sent_at'] = null;
-                    }
+    // Kolom overdue merupakan tambahan migration; cek agar update
+    // transaksi lama tetap aman sebelum migration dijalankan.
+    if (Schema::hasColumn('pengambilan_alats', 'warning_overdue_sent_at')) {
+        $resetWarningData['warning_overdue_sent_at'] = null;
+    }
 
-                    $updateData = array_merge($updateData, $resetWarningData);
-                }
+    $updateData = array_merge($updateData, $resetWarningData);
+}
 
-                $data->update($updateData);
+// Persetujuan lama tidak berlaku lagi jika data transaksi diubah.
+if ($data->approved_at) {
+    $updateData['approved_by']        = null;
+    $updateData['approved_by_name']   = null;
+    $updateData['approved_at']        = null;
+    $updateData['approved_by_role']   = null;
+    $updateData['verification_token'] = null;
+}
+
+$data->update($updateData);
 
                 if ($dueDateChanged) {
                     $this->deleteWarningNotificationsForBatch((int) $data->id);

@@ -8,7 +8,7 @@
     <style>
         @page {
             size: A4 portrait;
-            margin: 8mm 10mm 8mm 10mm;
+            margin: 8mm 10mm;
         }
 
         * {
@@ -208,6 +208,16 @@
             font-weight: bold;
         }
 
+        .approval-status {
+            display: inline-block;
+            padding: 2px 6px;
+            border: 1px solid #78a88b;
+            background: #edf7f0;
+            color: #17613a;
+            font-size: 7.5pt;
+            font-weight: bold;
+        }
+
         .declaration {
             margin-top: 6px;
             text-align: justify;
@@ -230,6 +240,7 @@
             text-align: justify;
         }
 
+        /* ============ BLOK TANDA TANGAN ============ */
         .signature-table {
             margin-top: 4px;
             page-break-inside: avoid;
@@ -253,9 +264,10 @@
         }
 
         .signature-space {
-            height: 35px;
+            height: 55px;
         }
 
+        /* Nama peminjam: garis tanda tangan di ATAS nama */
         .signature-name {
             min-height: 17px;
             padding-top: 4px;
@@ -263,9 +275,38 @@
             font-weight: bold;
         }
 
+        /* Nama penyetuju: teks tebal dengan garis bawah (seperti contoh) */
+        .signature-plain-name {
+            min-height: 17px;
+            font-weight: bold;
+            text-decoration: underline;
+        }
+
         .signature-id {
             margin-top: 2px;
-            font-size: 8pt;
+            font-size: 7.5pt;
+            color: #4b5563;
+        }
+
+        /* QR sebagai tanda tangan elektronik */
+        .signature-qr-wrap {
+            margin: 8px auto 7px;
+            text-align: center;
+        }
+
+        .signature-qr {
+            display: inline-block;
+            width: 92px;
+            height: 92px;
+        }
+
+        .qr-unavailable {
+            display: inline-block;
+            padding: 7px;
+            border: 1px dashed #b7791f;
+            color: #8a5a12;
+            font-size: 7pt;
+            line-height: 1.3;
         }
 
         .footer {
@@ -288,32 +329,6 @@
 
         .footer-table td:last-child {
             text-align: right;
-        }
-
-        .muted {
-            color: #5b6570;
-        }
-
-        .no-wrap {
-            white-space: nowrap;
-        }
-
-        .print-actions {
-            max-width: 210mm;
-            margin: 18px auto 0;
-            text-align: right;
-        }
-
-        .print-button {
-            display: inline-block;
-            padding: 10px 16px;
-            border: 0;
-            border-radius: 5px;
-            background: #263746;
-            color: #fff;
-            font-size: 7.5pt;
-            font-weight: bold;
-            cursor: pointer;
         }
 
         @media screen {
@@ -347,47 +362,113 @@
                 break-after: auto;
             }
 
-            .print-actions {
-                display: none !important;
-            }
-
             .copy-label {
                 background: #f3f5f7 !important;
-            }
-
-            .section-heading,
-            .items-table th,
-            .info-table .label {
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
             }
         }
     </style>
 </head>
 
 <body>
-    @php
-        $single = $list->count() === 1;
-        $first = $list->first();
-        $logoPath = public_path('images/logo-metrologi.png');
 
+    @php
+        // ===== PREPARE DATA DI AWAL (AMAN DARI ERROR PARSING) =====
+        $single = isset($list) && $list->count() === 1;
+        $first = isset($list) ? $list->first() : null;
+
+        // Logo
+        $logoPath = public_path('images/logo-metrologi.png');
         if (!file_exists($logoPath)) {
             $logoPath = public_path('images/logos.jpg');
         }
         if (!file_exists($logoPath)) {
             $logoPath = public_path('images/logo.jpg');
         }
-
         $logoBase64 = file_exists($logoPath) ? base64_encode(file_get_contents($logoPath)) : null;
-        $logoMime = $logoBase64 ? (mime_content_type($logoPath) ?: 'image/png') : 'image/png';
-        $documentNumber = $first->hashid ?? '-';
-        $borrowerName = $first->nama_peminjam ?? ($first->user->name ?? '-');
-        $departmentName = $first->bagian->nama ?? '-';
-        $loanDate = $first->waktu_pengambilan ? \Carbon\Carbon::parse($first->waktu_pengambilan)->format('d F Y') : '-';
-        $loanTime = $first->waktu_pengambilan ? \Carbon\Carbon::parse($first->waktu_pengambilan)->format('H:i') : '-';
-        $loanDuration = $first->lama_pinjam ?? null;
-        $loanStatus = $first->status ?? 'dipinjam';
-        $printedAt = now()->format('d-m-Y H:i');
+        $logoMime = $logoBase64 ? 'image/png' : 'image/png';
+
+        // Data utama - fallback aman
+        $documentNumber = '-';
+        $borrowerName = '-';
+        $departmentName = '-';
+        $loanDate = '-';
+        $loanTime = '-';
+        $loanDuration = null;
+        $loanStatus = 'dipinjam';
+        $keperluan = '-';
+        $items = collect();
+
+        if ($first) {
+            $documentNumber = !empty($first->hashid) ? $first->hashid : '-';
+
+            if (!empty($first->nama_peminjam)) {
+                $borrowerName = $first->nama_peminjam;
+            } elseif (isset($first->user) && !empty($first->user->name)) {
+                $borrowerName = $first->user->name;
+            }
+
+            $departmentName = isset($first->bagian) && !empty($first->bagian->nama) ? $first->bagian->nama : '-';
+
+            if (!empty($first->waktu_pengambilan)) {
+                $loanDate = \Carbon\Carbon::parse($first->waktu_pengambilan)->format('d F Y');
+                $loanTime = \Carbon\Carbon::parse($first->waktu_pengambilan)->format('H:i');
+            }
+
+            $loanDuration = !empty($first->lama_pinjam) ? $first->lama_pinjam : null;
+            $loanStatus = !empty($first->status) ? $first->status : 'dipinjam';
+            $keperluan = !empty($first->keperluan) ? $first->keperluan : '-';
+
+            if (isset($first->items) && $first->items) {
+                $items = $first->items;
+            }
+        }
+
+        // Data approval - cek manual tanpa nullsafe
+        $approvalName = null;
+        if ($first && !empty($first->approved_by_name)) {
+            $approvalName = $first->approved_by_name;
+        } elseif ($first && isset($first->approver) && !empty($first->approver->name)) {
+            $approvalName = $first->approver->name;
+        }
+
+        $approvalAt = null;
+        if ($first && !empty($first->approved_at)) {
+            $approvalAt = \Carbon\Carbon::parse($first->approved_at)->format('d/m/Y H:i');
+        }
+
+        $isApproved = !empty($approvalAt) && !empty($approvalName);
+        $approvalRole = '-';
+        if ($first && !empty($first->approved_by_role)) {
+            $approvalRole = $first->approved_by_role;
+        } else {
+            $approvalRole = 'Admin / Super Admin';
+        }
+
+        // Verification URL
+        $verificationUrl = null;
+        if ($isApproved && $first && !empty($first->verification_token)) {
+            try {
+                $verificationUrl = route('pengambilan_alat.verification', ['token' => $first->verification_token]);
+            } catch (\Exception $e) {
+                $verificationUrl = null;
+            }
+        }
+
+        // QR Code generation (SVG agar tajam saat dicetak)
+        $qrSvg = null;
+        if ($verificationUrl && class_exists('\BaconQrCode\Writer')) {
+            try {
+                $rendererStyle = new \BaconQrCode\Renderer\RendererStyle\RendererStyle(220, 2);
+                $imageBackEnd = new \BaconQrCode\Renderer\Image\SvgImageBackEnd();
+                $qrRenderer = new \BaconQrCode\Renderer\ImageRenderer($rendererStyle, $imageBackEnd);
+                $writer = new \BaconQrCode\Writer($qrRenderer);
+                $qrSvg = $writer->writeString($verificationUrl);
+            } catch (\Throwable $e) {
+                $qrSvg = null;
+            }
+        }
+
+        $printedAt = \Carbon\Carbon::now()->format('d-m-Y H:i');
     @endphp
 
     <main class="document">
@@ -400,7 +481,7 @@
                         @if ($logoBase64)
                             <td class="logo-cell">
                                 <img class="logo" src="data:{{ $logoMime }};base64,{{ $logoBase64 }}"
-                                    alt="Logo instansi">
+                                    alt="Logo">
                             </td>
                         @endif
                         <td>
@@ -431,13 +512,30 @@
                     </tr>
                     <tr>
                         <td class="label">Lama Peminjaman</td>
-                        <td class="value">{{ filled($loanDuration) ? $loanDuration : 'Tidak dicantumkan' }}</td>
+                        <td class="value">
+                            @if ($loanDuration)
+                                {{ $loanDuration }} hari
+                            @else
+                                Tidak dicantumkan
+                            @endif
+                        </td>
                         <td class="label">Status</td>
                         <td class="value">
                             @if ($loanStatus === 'dipinjam')
                                 <span class="status">SEDANG DIPINJAM</span>
                             @else
                                 <span class="status">SUDAH DIKEMBALIKAN</span>
+                            @endif
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="label">Persetujuan Admin</td>
+                        <td class="value" colspan="3">
+                            @if ($isApproved)
+                                <span class="approval-status">DISETUJUI</span>
+                                oleh {{ $approvalName }} ({{ $approvalRole }}) pada {{ $approvalAt }} WIB
+                            @else
+                                <span class="status">BELUM DISETUJUI</span>
                             @endif
                         </td>
                     </tr>
@@ -457,27 +555,52 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @forelse (($first->items ?? collect()) as $i => $detail)
+                        @php
+                            $itemIndex = 0;
+                        @endphp
+                        @foreach ($items as $detail)
+                            @php
+                                $itemIndex++;
+                                $alatName = 'Nama alat tidak tersedia';
+                                $alatMerk = '-';
+                                $alatTipe = '';
+                                $alatSeri = '-';
+                                $alatSatuan = 'unit';
+
+                                if (isset($detail->alat) && $detail->alat) {
+                                    $alatName = !empty($detail->alat->nama_alat)
+                                        ? $detail->alat->nama_alat
+                                        : 'Nama alat tidak tersedia';
+                                    $alatMerk = !empty($detail->alat->merk) ? $detail->alat->merk : '-';
+                                    $alatTipe = !empty($detail->alat->tipe) ? $detail->alat->tipe : '';
+                                    $alatSeri = !empty($detail->alat->no_seri) ? $detail->alat->no_seri : '-';
+                                    $alatSatuan = !empty($detail->alat->satuan) ? $detail->alat->satuan : 'unit';
+                                }
+
+                                $jumlah = isset($detail->jumlah) ? $detail->jumlah : 0;
+                                $satuan = !empty($detail->satuan) ? $detail->satuan : $alatSatuan;
+                            @endphp
                             <tr>
-                                <td class="center">{{ $i + 1 }}</td>
-                                <td><strong>{{ $detail->alat->nama_alat ?? 'Nama alat tidak tersedia' }}</strong></td>
+                                <td class="center">{{ $itemIndex }}</td>
+                                <td><strong>{{ $alatName }}</strong></td>
                                 <td>
-                                    {{ $detail->alat->merk ?? '-' }}
-                                    @if (filled($detail->alat->tipe ?? null))
-                                        / {{ $detail->alat->tipe }}
+                                    {{ $alatMerk }}
+                                    @if ($alatTipe)
+                                        / {{ $alatTipe }}
                                     @endif
                                 </td>
-                                <td>{{ $detail->alat->no_seri ?? '-' }}</td>
-                                <td class="center">{{ $detail->jumlah ?? 0 }}</td>
-                                <td class="center">{{ $detail->satuan ?? ($detail->alat->satuan ?? 'unit') }}</td>
-                                <td>{{ $first->keperluan ?? '-' }}</td>
+                                <td>{{ $alatSeri }}</td>
+                                <td class="center">{{ $jumlah }}</td>
+                                <td class="center">{{ $satuan }}</td>
+                                <td>{{ $keperluan }}</td>
                             </tr>
-                        @empty
+                        @endforeach
+
+                        @if ($items->isEmpty())
                             <tr>
-                                <td colspan="7" class="center">Rincian alat tidak tersedia pada data peminjaman ini.
-                                </td>
+                                <td colspan="7" class="center">Rincian alat tidak tersedia.</td>
                             </tr>
-                        @endforelse
+                        @endif
                     </tbody>
                 </table>
 
@@ -485,36 +608,57 @@
                 <p class="declaration">
                     Dengan menandatangani dokumen ini, peminjam menyatakan bahwa alat yang tercantum di atas telah
                     diterima sesuai jumlah yang tertera. Peminjam bertanggung jawab menjaga, menggunakan, dan
-                    mengembalikan alat sesuai ketentuan yang berlaku. Apabila terdapat kerusakan, kehilangan, atau
-                    ketidaksesuaian, peminjam wajib melaporkannya kepada petugas yang berwenang.
+                    mengembalikan alat sesuai ketentuan yang berlaku.
                 </p>
 
                 <table class="declaration-table">
                     <tr>
                         <td style="width: 22%; font-weight: bold;">Catatan kondisi alat</td>
-                        <td style="height: 30px;">Diisi apabila terdapat catatan saat serah terima:
+                        <td style="height: 30px;">
                             ................................................................................</td>
                     </tr>
                 </table>
 
                 <p class="signature-intro">
                     Demikian bukti pengambilan dan serah terima alat ini dibuat untuk digunakan sebagaimana mestinya.
-                    Masing-masing pihak menyimpan satu salinan sebagai bukti administrasi.
                 </p>
 
+                {{-- ═════════════ BLOK TANDA TANGAN ═════════════ --}}
                 <table class="signature-table">
                     <tr>
+                        {{-- KOLOM KIRI: PEMINJAM (tanda tangan basah) --}}
                         <td>
                             <div class="signature-role">Peminjam</div>
                             <div class="signature-note">Tanda tangan dan nama jelas</div>
-                            <div class="signature-space"></div><br><br><br><br>
+                            <div class="signature-space"></div><br><br><br>
                             <div class="signature-name">{{ $borrowerName }}</div>
                         </td>
+
+                        {{-- KOLOM KANAN: PENYETUJU (QR = tanda tangan elektronik) --}}
                         <td>
-                            <div class="signature-role">Petugas / Admin</div>
-                            <div class="signature-note">Tanda tangan dan nama jelas</div>
-                            <div class="signature-space"></div><br><br><br><br>
-                            <div class="signature-name">................................................</div>
+                            @if ($isApproved)
+                                <div class="signature-role">{{ $approvalRole }} Penyetuju</div>
+
+                                <div class="signature-qr-wrap">
+                                    @if ($qrSvg)
+                                        <img class="signature-qr"
+                                            src="data:image/svg+xml;base64,{{ base64_encode($qrSvg) }}"
+                                            alt="QR Tanda Tangan Elektronik">
+                                    @else
+                                        <div class="qr-unavailable">QR tidak tersedia</div>
+                                    @endif
+                                </div>
+
+                                <div class="signature-plain-name">{{ $approvalName }}</div>
+                                <div class="signature-id">
+                                    Ditandatangani secara elektronik pada {{ $approvalAt }} WIB
+                                </div>
+                            @else
+                                <div class="signature-role">Petugas / Admin</div>
+                                <div class="signature-note">Tanda tangan dan nama jelas</div>
+                                <div class="signature-space"></div>
+                                <div class="signature-name">................................................</div>
+                            @endif
                         </td>
                     </tr>
                 </table>
@@ -528,7 +672,11 @@
                         <tr>
                             <td colspan="2" style="padding-top: 3px;">
                                 Arsip:
-                                {{ $copyType === 'PEMINJAM' ? 'Disimpan oleh peminjam.' : 'Disimpan oleh admin/petugas sebagai arsip.' }}
+                                @if ($copyType === 'PEMINJAM')
+                                    Disimpan oleh peminjam.
+                                @else
+                                    Disimpan oleh admin/petugas sebagai arsip.
+                                @endif
                             </td>
                         </tr>
                     </table>

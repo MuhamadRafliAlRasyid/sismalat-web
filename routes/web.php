@@ -193,26 +193,39 @@ Route::middleware('auth')->group(function () {
        -------------------------
        URUTAN: statis → dinamis
        ------------------------- */
-    Route::prefix('pengambilan_alat')->name('pengambilan_alat.')->group(function () {
+ /* -------------------------
+   PENGAMBILAN ALAT (multi-item)
+   -------------------------
+   URUTAN: statis → dinamis
+   ------------------------- */
+Route::prefix('pengambilan_alat')->name('pengambilan_alat.')->group(function () {
 
-        // Statis — semua role
-        Route::get('/', [PengambilanAlatController::class, 'index'])->name('index');
-        Route::get('/create', [PengambilanAlatController::class, 'create'])->name('create');
-        Route::post('/', [PengambilanAlatController::class, 'store'])->name('store');
-        Route::get('/export/pdf', [PengambilanAlatController::class, 'exportPdf'])->name('export.pdf');
+    // Statis — semua role
+    Route::get('/', [PengambilanAlatController::class, 'index'])->name('index');
+    Route::get('/create', [PengambilanAlatController::class, 'create'])->name('create');
+    Route::post('/', [PengambilanAlatController::class, 'store'])->name('store');
 
-        // Dinamis — semua role
-        Route::get('/{hashid}', [PengambilanAlatController::class, 'show'])->name('show');
-        Route::get('/export/pdf/{hashid}', [PengambilanAlatController::class, 'exportPdf'])->name('export.single');
+    // ✅ Export routes — WAJIB SEBELUM {hashid} & tanpa middleware role (diproses di controller)
+    Route::get('/export/excel', [PengambilanAlatController::class, 'exportExcel'])->name('export.excel');
+    Route::get('/export/pdf', [PengambilanAlatController::class, 'exportPdf'])->name('export.pdf');
+    Route::get('/export/pdf/{hashid}', [PengambilanAlatController::class, 'exportPdf'])->name('export.single');
 
-        // Dinamis — khusus admin/super
-        Route::middleware('role:admin,super')->group(function () {
-            Route::get('/{hashid}/edit', [PengambilanAlatController::class, 'edit'])->name('edit');
-            Route::put('/{hashid}', [PengambilanAlatController::class, 'update'])->name('update');
-            Route::delete('/{hashid}', [PengambilanAlatController::class, 'destroy'])->name('destroy');
-        });
+    // ⬅️ Route publik untuk verifikasi QR
+    Route::get('/verifikasi/{token}', [\App\Http\Controllers\PengambilanAlatVerificationController::class, 'show'])
+        ->withoutMiddleware(['auth'])
+        ->name('verification');
+
+    // Dinamis — semua role
+    Route::get('/{hashid}', [PengambilanAlatController::class, 'show'])->name('show');
+
+    // Dinamis — khusus admin/super
+    Route::middleware('role:admin,super')->group(function () {
+        Route::post('/{hashid}/approve', [PengambilanAlatController::class, 'approve'])->name('approve');
+        Route::get('/{hashid}/edit', [PengambilanAlatController::class, 'edit'])->name('edit');
+        Route::put('/{hashid}', [PengambilanAlatController::class, 'update'])->name('update');
+        Route::delete('/{hashid}', [PengambilanAlatController::class, 'destroy'])->name('destroy');
     });
-
+});
     /* -------------------------
        PENGEMBALIAN ALAT (multi-item)
        ------------------------- */
@@ -322,17 +335,33 @@ Route::middleware(['auth', 'role:admin,super'])->group(function () {
        ------------------------- */
     Route::prefix('kalibrasis')->name('kalibrasis.')->group(function () {
 
-        // Statis
-        Route::get('/', [KalibrasiAlatController::class, 'index'])->name('index');
+    Route::get('/', [KalibrasiAlatController::class, 'index'])
+        ->name('index');
 
-        // Dinamis
-        Route::get('/create/{hashid}', [KalibrasiAlatController::class, 'create'])->name('create');
-        Route::post('/store/{hashid}', [KalibrasiAlatController::class, 'store'])->name('store');
-        Route::get('/{hashid}', [KalibrasiAlatController::class, 'show'])->name('show');
-        Route::get('/{hashid}/edit', [KalibrasiAlatController::class, 'edit'])->name('edit');
-        Route::put('/{hashid}', [KalibrasiAlatController::class, 'update'])->name('update');
-        Route::delete('/{hashid}', [KalibrasiAlatController::class, 'destroy'])->name('destroy');
-    });
+    Route::get('/create/{hashid}', [KalibrasiAlatController::class, 'create'])
+        ->name('create');
+
+    Route::post('/store/{hashid}', [KalibrasiAlatController::class, 'store'])
+        ->name('store');
+
+    // BUKTI SERTIFIKAT
+    Route::get('/{hashid}/sertifikat', [
+        KalibrasiAlatController::class,
+        'sertifikat'
+    ])->name('sertifikat');
+
+    Route::get('/{hashid}', [KalibrasiAlatController::class, 'show'])
+        ->name('show');
+
+    Route::get('/{hashid}/edit', [KalibrasiAlatController::class, 'edit'])
+        ->name('edit');
+
+    Route::put('/{hashid}', [KalibrasiAlatController::class, 'update'])
+        ->name('update');
+
+    Route::delete('/{hashid}', [KalibrasiAlatController::class, 'destroy'])
+        ->name('destroy');
+});
 
     /* -------------------------
        KATEGORI
@@ -354,19 +383,19 @@ Route::middleware(['auth', 'role:admin,super'])->group(function () {
     /* -------------------------
        RUANGAN
        ------------------------- */
-    Route::prefix('ruangans')->name('ruangans.')->group(function () {
+    // Route::prefix('ruangans')->name('ruangans.')->group(function () {
 
-        // Statis
-        Route::get('/', [RuanganController::class, 'index'])->name('index');
-        Route::get('/create', [RuanganController::class, 'create'])->name('create');
-        Route::post('/', [RuanganController::class, 'store'])->name('store');
+    //     // Statis
+    //     Route::get('/', [RuanganController::class, 'index'])->name('index');
+    //     Route::get('/create', [RuanganController::class, 'create'])->name('create');
+    //     Route::post('/', [RuanganController::class, 'store'])->name('store');
 
-        // Dinamis
-        Route::get('/{hashid}', [RuanganController::class, 'show'])->name('show');
-        Route::get('/{hashid}/edit', [RuanganController::class, 'edit'])->name('edit');
-        Route::put('/{hashid}', [RuanganController::class, 'update'])->name('update');
-        Route::delete('/{hashid}', [RuanganController::class, 'destroy'])->name('destroy');
-    });
+    //     // Dinamis
+    //     Route::get('/{hashid}', [RuanganController::class, 'show'])->name('show');
+    //     Route::get('/{hashid}/edit', [RuanganController::class, 'edit'])->name('edit');
+    //     Route::put('/{hashid}', [RuanganController::class, 'update'])->name('update');
+    //     Route::delete('/{hashid}', [RuanganController::class, 'destroy'])->name('destroy');
+    // });
 
     /* -------------------------
        BAGIAN

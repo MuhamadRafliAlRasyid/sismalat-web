@@ -1,207 +1,184 @@
 @extends('layouts.app')
 
-@section('title', 'Edit Pengembalian Alat')
+@section('title', 'Edit Catatan Pengembalian')
 
 @section('content')
-    <div class="max-w-2xl mx-auto px-4 py-8" x-data="pengembalianEditForm({{ json_encode([
-        'jatuhTempo' => $data->pengambilan->tanggal_jatuh_tempo?->format('Y-m-d'),
-        'sisaPinjaman' => $data->pengambilan->jumlah - ($data->pengambilan->pengembalians()->sum('jumlah') - $data->jumlah),
-        'satuan' => $data->pengambilan->satuan ?? 'pcs',
-        'jumlahSaatIni' => $data->jumlah,
-    ]) }})">
+    @php
+        $pengambilan = $data->pengambilan;
+        $item = $data->item;
+        $alat = $item->alat ?? ($pengambilan->alat ?? null);
+        $peminjam = $pengambilan->nama_peminjam ?? ($pengambilan->user->name ?? '-');
+        $unit = $item->satuan ?? ($pengambilan->satuan ?? ($alat->satuan ?? 'unit'));
+        $dueDate = $pengambilan->tanggal_jatuh_tempo ? $pengambilan->tanggal_jatuh_tempo->toDateString() : null;
+        $returnDate = $data->tanggal_pengembalian ? $data->tanggal_pengembalian->toDateString() : now()->toDateString();
+    @endphp
 
-        <a href="{{ route('pengembalian_alat.index') }}"
-            class="inline-flex items-center gap-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 mb-6 group transition-colors">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-7 sm:py-8" x-data="returnEditForm({ dueDate: @js($dueDate), returnDate: @js(old('tanggal_pengembalian', $returnDate)), hasPhoto: @js((bool) $data->foto) })">
+
+        <a href="{{ route('pengembalian_alat.show', $data->hashid) }}"
+            class="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400">
             <span
-                class="w-8 h-8 rounded-xl bg-gray-100 dark:bg-gray-800 group-hover:bg-gray-200 flex items-center justify-center">
-                <i class="fas fa-arrow-left text-sm"></i>
+                class="flex h-9 w-9 items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+                <i class="fas fa-arrow-left"></i>
             </span>
-            <span class="font-medium">Kembali</span>
+            Kembali ke detail pengembalian
         </a>
 
-        <div
-            class="bg-white dark:bg-gray-800 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
-            <div
-                class="bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 p-6 sm:p-8 border-b border-amber-100 dark:border-gray-700">
-                <div class="flex items-center gap-4">
-                    <span
-                        class="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-white dark:bg-gray-800 shadow-lg shadow-amber-100">
-                        <i class="fas fa-edit text-xl text-amber-500"></i>
-                    </span>
-                    <div class="flex-1">
-                        <h2 class="text-2xl font-bold text-gray-800 dark:text-gray-100">Edit Pengembalian Alat</h2>
-                        <p class="text-gray-500 dark:text-gray-400 text-sm mt-0.5">
-                            {{ $data->pengambilan->alat->nama_alat ?? '-' }}
-                        </p>
-                    </div>
+        <section
+            class="mb-6 rounded-3xl border border-blue-100 dark:border-gray-700 bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-800 dark:via-gray-800 dark:to-gray-900 p-5 sm:p-7">
+            <div class="flex items-start gap-4">
+                <span
+                    class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-lg"><i
+                        class="fas fa-pen-to-square text-lg"></i></span>
+                <div class="min-w-0">
+                    <p class="text-xs font-bold uppercase tracking-[.15em] text-blue-700 dark:text-blue-400">Koreksi data
+                    </p>
+                    <h1 class="mt-1 text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-white">Edit Pengembalian
+                        Alat</h1>
+                    <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">Perbarui tanggal, keterangan, atau foto bukti.
+                        Jumlah yang tercatat tidak diubah pada halaman ini.</p>
                 </div>
             </div>
+            <div class="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div class="rounded-xl border border-white dark:border-gray-700 bg-white/80 dark:bg-gray-900/50 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-wide text-gray-400">Alat</p>
+                    <p class="mt-1 font-semibold text-gray-900 dark:text-white">
+                        {{ $alat->nama_alat ?? 'Alat tidak tersedia' }}</p>
+                </div>
+                <div class="rounded-xl border border-white dark:border-gray-700 bg-white/80 dark:bg-gray-900/50 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-wide text-gray-400">Peminjam</p>
+                    <p class="mt-1 truncate font-semibold text-gray-900 dark:text-white">{{ $peminjam }}</p>
+                </div>
+                <div class="rounded-xl border border-white dark:border-gray-700 bg-white/80 dark:bg-gray-900/50 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-wide text-gray-400">Jumlah dicatat</p>
+                    <p class="mt-1 font-extrabold text-gray-900 dark:text-white">{{ number_format($data->jumlah) }}
+                        {{ $unit }}</p>
+                </div>
+            </div>
+        </section>
 
-            <form method="POST" action="{{ route('pengembalian_alat.update', $data->hashid) }}"
-                enctype="multipart/form-data" class="p-6 sm:p-8 space-y-6">
-                @csrf
-                @method('PUT')
+        @if (session('error'))
+            <div class="mb-5 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-800 dark:text-red-200"
+                role="alert">{{ session('error') }}</div>
+        @endif
+        @if ($errors->any())
+            <div class="mb-5 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-red-800 dark:text-red-200"
+                role="alert">
+                <p class="font-semibold text-sm">Periksa kembali data berikut:</p>
+                <ul class="mt-2 list-disc pl-5 text-sm">
+                    @foreach ($errors->all() as $error)
+                        <li>{{ $error }}</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
 
-                {{-- Alert Status --}}
-                <div x-show="isTerlambat" x-transition
-                    class="bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 rounded-r-xl p-4">
-                    <div class="flex items-start gap-3">
-                        <i class="fas fa-exclamation-circle text-red-500 text-xl mt-0.5"></i>
-                        <div class="flex-1">
-                            <h4 class="font-bold text-red-800 dark:text-red-300 text-sm">Pengembalian Melewat Tenggat</h4>
-                            <p class="text-red-700 dark:text-red-400 text-xs mt-1">
-                                Terlambat <span class="font-bold" x-text="hariTerlambat"></span> hari.
-                                <strong>Keterangan dan foto WAJIB diisi.</strong>
-                            </p>
+        <form method="POST" action="{{ route('pengembalian_alat.update', $data->hashid) }}" enctype="multipart/form-data"
+            class="overflow-hidden rounded-2xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+            @csrf
+            @method('PUT')
+            <div class="space-y-6 p-5 sm:p-7">
+                <div>
+                    <label for="tanggal_pengembalian"
+                        class="mb-2 block text-sm font-semibold text-gray-800 dark:text-gray-200">Tanggal pengembalian <span
+                            class="text-red-500">*</span></label>
+                    <input id="tanggal_pengembalian" name="tanggal_pengembalian" type="date" required
+                        x-model="returnDate" value="{{ old('tanggal_pengembalian', $returnDate) }}"
+                        class="w-full rounded-xl border-gray-300 dark:border-gray-600 dark:bg-gray-900 dark:text-white focus:border-blue-500 focus:ring-blue-500">
+                    @error('tanggal_pengembalian')
+                        <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                    @enderror
+                </div>
+
+                <div x-show="isLate" x-transition
+                    class="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-4"
+                    role="alert">
+                    <div class="flex items-start gap-3"><i class="fas fa-triangle-exclamation mt-0.5 text-red-600"></i>
+                        <div>
+                            <p class="text-sm font-bold text-red-800 dark:text-red-300">Tanggal pengembalian melewati jatuh
+                                tempo</p>
+                            <p class="mt-1 text-xs text-red-700 dark:text-red-400">Keterangan minimal 10 karakter dan foto
+                                bukti wajib tersedia. Foto lama tetap digunakan apabila tidak diganti.</p>
                         </div>
                     </div>
                 </div>
-
-                <div x-show="!isTerlambat" x-transition
-                    class="bg-emerald-50 dark:bg-emerald-900/20 border-l-4 border-emerald-500 rounded-r-xl p-4">
-                    <div class="flex items-start gap-3">
-                        <i class="fas fa-check-circle text-emerald-500 text-xl mt-0.5"></i>
-                        <div class="flex-1">
-                            <h4 class="font-bold text-emerald-800 dark:text-emerald-300 text-sm">Tepat Waktu ✓</h4>
-                            <p class="text-emerald-700 dark:text-emerald-400 text-xs mt-1">
-                                Keterangan dan foto bersifat opsional.
-                            </p>
-                        </div>
-                    </div>
+                <div x-show="!isLate" x-transition
+                    class="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/15 p-4">
+                    <p class="text-xs text-emerald-800 dark:text-emerald-300"><i class="fas fa-circle-check mr-1"></i>
+                        Tanggal yang dipilih tidak melewati jatuh tempo.</p>
                 </div>
 
-                {{-- Jumlah (Auto-fill) --}}
-                <div class="form-group">
-                    <label class="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
-                        <span class="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
-                            <i class="fas fa-boxes text-amber-600 dark:text-amber-400 text-xs"></i>
-                        </span>
-                        Jumlah Dikembalikan
-                    </label>
-                    <input type="hidden" name="jumlah" :value="sisaPinjaman">
-                    <div
-                        class="w-full px-4 py-3 bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl text-gray-700 dark:text-gray-200 font-bold text-lg flex items-center justify-between">
-                        <span x-text="sisaPinjaman + ' ' + satuan"></span>
-                        <span class="text-xs text-gray-500 dark:text-gray-400 font-normal">(otomatis)</span>
-                    </div>
-                </div>
-
-                {{-- Tanggal --}}
-                <div class="form-group">
-                    <label class="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
-                        <span class="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
-                            <i class="fas fa-calendar-alt text-amber-600 dark:text-amber-400 text-xs"></i>
-                        </span>
-                        Tanggal Pengembalian
-                    </label>
-                    <input type="date" name="tanggal_pengembalian"
-                        value="{{ old('tanggal_pengembalian', \Carbon\Carbon::parse($data->tanggal_pengembalian)->format('Y-m-d')) }}"
-                        class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl focus:bg-white dark:focus:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-amber-400 text-gray-700 dark:text-gray-200">
-                </div>
-
-                {{-- Keterangan --}}
-                <div class="form-group">
-                    <label class="flex items-center gap-2 text-sm font-semibold mb-2"
-                        :class="isTerlambat ? 'text-red-700 dark:text-red-400' : 'text-gray-700 dark:text-gray-200'">
-                        <span class="w-6 h-6 rounded-lg flex items-center justify-center"
-                            :class="isTerlambat ? 'bg-red-100 dark:bg-red-900/30' : 'bg-amber-100 dark:bg-amber-900/30'">
-                            <i class="fas fa-sticky-note text-xs"
-                                :class="isTerlambat ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'"></i>
-                        </span>
+                <div>
+                    <label for="keterangan" class="mb-2 block text-sm font-semibold text-gray-800 dark:text-gray-200">
                         Keterangan
-                        <span x-show="isTerlambat" class="text-red-500">*</span>
-                        <span x-show="!isTerlambat" class="text-xs text-gray-400 font-normal">(opsional)</span>
+                        <span x-show="isLate" class="text-red-500">*</span>
+                        <span x-show="!isLate" class="text-xs font-normal text-gray-400">(opsional)</span>
                     </label>
-                    <textarea name="keterangan" rows="4" :required="isTerlambat"
-                        :class="isTerlambat ? 'border-red-300 dark:border-red-700 focus:ring-red-400' :
-                            'border-gray-200 dark:border-gray-700 focus:ring-amber-400'"
-                        class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-900 border rounded-2xl focus:bg-white dark:focus:bg-gray-800 focus:outline-none focus:border-transparent transition-all duration-300 text-gray-700 dark:text-gray-200 resize-none"
-                        :placeholder="isTerlambat ? 'Wajib jelaskan alasan keterlambatan...' : 'Catatan tambahan (opsional)'">{{ old('keterangan', $data->keterangan) }}</textarea>
+                    <textarea id="keterangan" name="keterangan" rows="4" :required="isLate" :minlength="isLate ? 10 : 0"
+                        placeholder="Catatan kondisi alat atau alasan keterlambatan..."
+                        class="w-full rounded-xl border-gray-300 dark:border-gray-600 dark:bg-gray-900 dark:text-white focus:border-blue-500 focus:ring-blue-500">{{ old('keterangan', $data->keterangan) }}</textarea>
+                    @error('keterangan')
+                        <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                    @enderror
                 </div>
 
-                {{-- Foto --}}
-                <div class="form-group">
-                    <label class="flex items-center gap-2 text-sm font-semibold mb-2"
-                        :class="isTerlambat ? 'text-red-700 dark:text-red-400' : 'text-gray-700 dark:text-gray-200'">
-                        <span class="w-6 h-6 rounded-lg flex items-center justify-center"
-                            :class="isTerlambat ? 'bg-red-100 dark:bg-red-900/30' : 'bg-amber-100 dark:bg-amber-900/30'">
-                            <i class="fas fa-camera text-xs"
-                                :class="isTerlambat ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'"></i>
-                        </span>
-                        Foto Bukti
-                        <span x-show="isTerlambat" class="text-red-500">*</span>
-                        <span x-show="!isTerlambat" class="text-xs text-gray-400 font-normal">(opsional)</span>
+                <div>
+                    <label for="foto" class="mb-2 block text-sm font-semibold text-gray-800 dark:text-gray-200">
+                        Foto bukti
+                        <span x-show="isLate && !hasPhoto" class="text-red-500">*</span>
+                        <span x-show="!isLate || hasPhoto" class="text-xs font-normal text-gray-400">(opsional bila foto
+                            lama tersedia)</span>
                     </label>
-
                     @if ($data->foto)
                         <div
-                            class="mb-3 flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-700">
-                            <img src="{{ $data->foto_url }}" alt="Foto bukti"
-                                class="w-20 h-20 rounded-xl object-cover border">
-                            <div class="flex-1">
-                                <p class="text-sm font-medium text-gray-700 dark:text-gray-200">Foto saat ini</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400">
-                                    @{{ !isTerlambat ? 'Biarkan kosong jika tidak ingin mengubah' : 'Upload foto baru untuk mengganti' }}
-                                </p>
+                            class="mb-3 flex items-center gap-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3">
+                            <img src="{{ $data->foto_thumb ?? $data->foto_url }}" alt="Foto bukti saat ini"
+                                class="h-20 w-20 rounded-lg object-cover">
+                            <div class="min-w-0">
+                                <p class="text-sm font-semibold text-gray-800 dark:text-gray-200">Foto bukti saat ini</p>
+                                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Pilih file baru hanya jika ingin
+                                    mengganti foto.</p>
                             </div>
                         </div>
                     @endif
-
-                    <input type="file" name="foto" accept="image/*"
-                        :required="isTerlambat && {{ $data->foto ? 'false' : 'true' }}"
-                        :class="isTerlambat ? 'border-red-300 dark:border-red-700 focus:ring-red-400' :
-                            'border-gray-200 dark:border-gray-700 focus:ring-amber-400'"
-                        class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-900 border rounded-2xl focus:bg-white dark:focus:bg-gray-800 focus:outline-none focus:border-transparent transition-all duration-300 text-gray-700 dark:text-gray-200 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-amber-50 dark:file:bg-amber-900/30 file:text-amber-700 dark:file:text-amber-400 hover:file:bg-amber-100">
-                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1.5 flex items-center gap-1">
-                        <i class="fas fa-info-circle"></i>
-                        Format JPG/PNG/WebP, maks 2MB
-                    </p>
+                    <input id="foto" name="foto" type="file" accept="image/jpeg,image/png,image/webp"
+                        :required="isLate && !hasPhoto"
+                        class="block w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-3 text-sm text-gray-600 dark:text-gray-300 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-100 file:px-3 file:py-2 file:font-semibold file:text-blue-800 hover:file:bg-blue-200">
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Format JPG, PNG, atau WEBP. Maksimal 2 MB.</p>
+                    @error('foto')
+                        <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                    @enderror
                 </div>
+            </div>
 
-                {{-- Action Buttons --}}
-                <div class="pt-6 border-t border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row gap-3 justify-end">
-                    <a href="{{ route('pengembalian_alat.index') }}"
-                        class="inline-flex items-center justify-center gap-2 px-6 py-3.5 border-2 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900 text-gray-700 dark:text-gray-200 font-medium rounded-2xl transition-all">
-                        <i class="fas fa-arrow-left"></i> Batal
-                    </a>
-                    <button type="submit"
-                        class="inline-flex items-center justify-center gap-2 px-8 py-3.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-semibold rounded-2xl transition-all duration-300 shadow-lg shadow-amber-200 hover:shadow-xl hover:-translate-y-0.5">
-                        <i class="fas fa-save"></i> Simpan Perubahan
-                    </button>
-                </div>
-            </form>
-        </div>
+            <div
+                class="flex flex-col-reverse sm:flex-row sm:justify-end gap-3 border-t border-gray-100 dark:border-gray-700 p-5 sm:px-7">
+                <a href="{{ route('pengembalian_alat.show', $data->hashid) }}"
+                    class="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 px-5 py-3 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Batal</a>
+                <button type="submit"
+                    class="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-bold text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"><i
+                        class="fas fa-save"></i> Simpan perubahan</button>
+            </div>
+        </form>
     </div>
-
-    @push('scripts')
-        <script>
-            function pengembalianEditForm(config) {
-                return {
-                    jatuhTempo: config.jatuhTempo,
-                    sisaPinjaman: config.sisaPinjaman,
-                    satuan: config.satuan,
-                    jumlahSaatIni: config.jumlahSaatIni,
-
-                    get isTerlambat() {
-                        if (!this.jatuhTempo) return false;
-                        const today = new Date();
-                        today.setHours(0, 0, 0, 0);
-                        const deadline = new Date(this.jatuhTempo);
-                        deadline.setHours(0, 0, 0, 0);
-                        return today > deadline;
-                    },
-
-                    get hariTerlambat() {
-                        if (!this.isTerlambat) return 0;
-                        const today = new Date();
-                        today.setHours(0, 0, 0, 0);
-                        const deadline = new Date(this.jatuhTempo);
-                        deadline.setHours(0, 0, 0, 0);
-                        const diffTime = today - deadline;
-                        return Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                    }
-                };
-            }
-        </script>
-    @endpush
 @endsection
+
+@push('scripts')
+    <script>
+        function returnEditForm(config) {
+            return {
+                dueDate: config.dueDate,
+                returnDate: config.returnDate,
+                hasPhoto: config.hasPhoto,
+                get isLate() {
+                    return !!(this.dueDate && this.returnDate && this.returnDate > this.dueDate);
+                }
+            };
+        }
+    </script>
+    <style>
+        [x-cloak] {
+            display: none !important;
+        }
+    </style>
+@endpush

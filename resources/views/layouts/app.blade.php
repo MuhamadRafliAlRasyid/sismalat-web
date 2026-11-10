@@ -1207,12 +1207,12 @@
                         <span class="sidebar-text">Kategori Alat</span>
                         <span class="collapsed-tooltip">Kategori</span>
                     </a>
-                    <a href="{{ route('ruangans.index') }}"
+                    {{-- <a href="{{ route('ruangans.index') }}"
                         class="menu-item flex items-center gap-4 px-4 py-3 text-base {{ request()->routeIs('ruangans.*') ? 'active' : 'text-gray-600 dark:text-gray-300' }} ripple">
                         <i class="fas fa-door-open w-6 h-6 text-center text-lg"></i>
                         <span class="sidebar-text">Ruangan (KIR)</span>
                         <span class="collapsed-tooltip">Ruangan</span>
-                    </a>
+                    </a> --}}
                     <a href="{{ route('kalibrasis.index') }}"
                         class="menu-item flex items-center gap-4 px-4 py-3 text-base {{ request()->routeIs('kalibrasis.*') ? 'active' : 'text-gray-600 dark:text-gray-300' }} ripple">
                         <i class="fas fa-wrench w-6 h-6 text-center text-lg"></i>

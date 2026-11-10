@@ -43,6 +43,11 @@ class PengambilanAlat extends Model
     'warning_1day_sent_at',
     'is_critical',
     'tracking_token_hash',
+    'approved_by',
+    'approved_by_name',
+    'approved_at',
+     'approved_by_role',
+    'verification_token',
 ];
 
     protected $casts = [
@@ -52,6 +57,7 @@ class PengambilanAlat extends Model
         'warning_15_sent_at'   => 'datetime',
         'warning_1day_sent_at' => 'datetime',
         'is_critical'          => 'boolean',
+         'approved_at'          => 'datetime',
     ];
 
     /* ================= RELASI ================= */
@@ -66,18 +72,35 @@ class PengambilanAlat extends Model
         return $this->belongsTo(User::class);
     }
 
+
+public function approver()
+{
+    return $this->belongsTo(User::class, 'approved_by');
+}
+
     public function alat()
     {
         return $this->belongsTo(Alat::class);
     }
 
-public function pengembalian(): HasMany
+/**
+ * Relasi ke seluruh riwayat pengembalian alat.
+ */
+public function pengembalians(): HasMany
 {
     return $this->hasMany(
         PengembalianAlat::class,
         'pengambilan_alat_id',
         'id'
     );
+}
+
+/**
+ * Alias untuk kompatibilitas dengan kode lama.
+ */
+public function pengembalian(): HasMany
+{
+    return $this->pengembalians();
 }
 
     public function bagian()
@@ -315,4 +338,30 @@ public function pengembalian(): HasMany
     {
         return 'hashid';
     }
+    /**
+ * Scope: cari berdasarkan verification_token
+ */
+public function scopeByVerificationToken($query, string $token)
+{
+    return $query->where('verification_token', $token);
+}
+
+/**
+ * Cek apakah sudah diverifikasi (disetujui)
+ */
+public function getIsApprovedAttribute(): bool
+{
+    return !is_null($this->approved_at);
+}
+
+/**
+ * Generate URL verifikasi publik
+ */
+public function getVerificationUrlAttribute(): ?string
+{
+    if (!$this->verification_token) {
+        return null;
+    }
+    return route('pengambilan_alat.verification', $this->verification_token);
+}
 }
